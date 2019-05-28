@@ -202,7 +202,7 @@ class T2Wnet:
                     gs += 1
 
                     # Для удаления цикличности данных они перемешиваются после каждой эпохи
-                    if gs % (len(dataset_val) // batch_size_of) == 0:
+                    if gs % (len(dataset_val) // batch_size_param) == 0:
                         nmp.random.shuffle(loc_dataset)
                         sess.run(self.iterate.initializer, feed_dict={self.input_ph: loc_dataset[:, 1],
                                                                       self.output_ph: loc_dataset[:, 0, nmp.newaxis]})

@@ -16,8 +16,8 @@ class LoadData:
         """Подготовка корпуса для обучения"""
 
         # Данные уже очищены, поэтому простое извлечение и конкатенация списка вопросов
-        first_row = list(loaded_csv['question1'].values)
-        second_row = list(loaded_csv['question2'].values)
+        first_row = list(loaded_csv['question1'].fillna('notastring').values)
+        second_row = list(loaded_csv['question2'].fillna('notastring').values)
 
         result_list = first_row + second_row
         return result_list

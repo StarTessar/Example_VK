@@ -186,7 +186,8 @@ class AnsPredict:
         tf.summary.histogram("distr_ans", lay_3)
 
         # Ввод контроля распределения ответов. Чем меньше разброс вокруг среднего, тем больше значение
-        all_mean = tf.reduce_max(2 / tf.exp(lay_3 - tf.reduce_mean(lay_3)))
+        # all_mean = tf.reduce_max(2 / tf.exp(lay_3 - tf.reduce_mean(lay_3)))
+        all_mean = tf.reduce_max(2 / tf.exp(tf.math.reduce_std(lay_3)))
         tf.summary.histogram("all_simult", all_mean)
 
         # Глобальный счётчик итераций
@@ -199,8 +200,8 @@ class AnsPredict:
         tf.summary.scalar("loss_func", self.loss_func)
 
         # Расчёт метрики
-        logloss = tf.reduce_max(tf.losses.log_loss(labels=output_batch, predictions=lay_3))
-        tf.summary.scalar("logloss", logloss)
+        self.logloss = tf.reduce_max(tf.losses.log_loss(labels=output_batch, predictions=lay_3))
+        tf.summary.scalar("logloss", self.logloss)
 
         # Вычисление текущего значения скорости обучения
         self.loc_lear = learn_rate * tf.pow(tf.cast(0.1, tf.float64), self.global_step / 500 + 1)
@@ -208,6 +209,53 @@ class AnsPredict:
         # Оптимизация весов
         self.optim = tf.train.AdamOptimizer(learning_rate=self.loc_lear).minimize(self.loss_func,
                                                                                   global_step=self.global_step)
+
+    @staticmethod
+    def shuffle_and_split(loc_dataset, test_scale):
+        """Перемешивание датасета и разбиение на тестовую и тренировочную выборки"""
+        ph_q1: nmp.ndarray = loc_dataset[0]
+        ph_q2: nmp.ndarray = loc_dataset[1]
+        ph_out: nmp.ndarray = loc_dataset[2]
+        
+        # Перемешивание
+        rnd_state = nmp.random.get_state()
+        nmp.random.shuffle(ph_q1)
+        nmp.random.set_state(rnd_state)
+        nmp.random.shuffle(ph_q2)
+        nmp.random.set_state(rnd_state)
+        nmp.random.shuffle(ph_out)
+        
+        # Выборка для теста
+        split_index = int(len(loc_dataset[0]) * test_scale)
+        ph_q1_test = ph_q1[:split_index]
+        ph_q2_test = ph_q2[:split_index]
+        ph_out_test = ph_out[:split_index]
+        test_dataset = [ph_q1_test, ph_q2_test, ph_out_test]
+        
+        # Выборка для обучения
+        ph_q1_train = ph_q1[split_index:]
+        ph_q2_train = ph_q2[split_index:]
+        ph_out_train = ph_out[split_index:]
+        train_dataset = [ph_q1_train, ph_q2_train, ph_out_train]
+
+        return test_dataset, train_dataset
+
+    @staticmethod
+    def just_shuffle(loc_dataset):
+        """Перемешивание датасета"""
+        ph_q1: nmp.ndarray = loc_dataset[0]
+        ph_q2: nmp.ndarray = loc_dataset[1]
+        ph_out: nmp.ndarray = loc_dataset[2]
+        
+        # Перемешиание
+        rnd_state = nmp.random.get_state()
+        nmp.random.shuffle(ph_q1)
+        nmp.random.set_state(rnd_state)
+        nmp.random.shuffle(ph_q2)
+        nmp.random.set_state(rnd_state)
+        nmp.random.shuffle(ph_out)
+
+        return ph_q1, ph_q2, ph_out
 
     def teach(self, limit, loc_dataset):
         """Метод для запуска процесса обучения"""
@@ -218,25 +266,21 @@ class AnsPredict:
             summ = tf.summary.merge_all()
             sess.run(tf.global_variables_initializer())
 
-            # Перемешивание датасета и инициализация итератора
-            ph_q1 = loc_dataset[0]
-            ph_q2 = loc_dataset[1]
-            ph_out = loc_dataset[2]
+            # Перемешивание датасета и инициализация итератора, организация тестовой выборки
+            test_scale = 0.2
 
-            rnd_state = nmp.random.get_state()
-            nmp.random.shuffle(ph_q1)
-            nmp.random.set_state(rnd_state)
-            nmp.random.shuffle(ph_q2)
-            nmp.random.set_state(rnd_state)
-            nmp.random.shuffle(ph_out)
+            test_dataset, train_dataset = AnsPredict.shuffle_and_split(loc_dataset, test_scale)
+            ph_q1_test, ph_q2_test, ph_out_test = test_dataset
+            ph_q1_train, ph_q2_train, ph_out_train = train_dataset
 
-            sess.run(self.iterate.initializer, feed_dict={self.input_ph_q1: ph_q1,
-                                                          self.input_ph_q2: ph_q2,
-                                                          self.output_ph: ph_out})
+            sess.run(self.iterate.initializer, feed_dict={self.input_ph_q1: ph_q1_train,
+                                                          self.input_ph_q2: ph_q2_train,
+                                                          self.output_ph: ph_out_train})
 
             # Подготовка логирования и сохранения сети
             saver = tf.train.Saver()
             writer = tf.summary.FileWriter('C:/TF/Log/' + 'quora' + self.get_log_directory())
+            test_writer = tf.summary.FileWriter('C:/TF/Log/' + 'quora_valid' + self.get_log_directory())
             writer.add_graph(sess.graph)
 
             # Главный обучающий цикл
@@ -252,24 +296,32 @@ class AnsPredict:
                     # Выполнение итерации
                     gs_loc, _ = sess.run([self.global_step, self.optim])
 
-                    # Логирование
-                    s = sess.run(summ)
-                    writer.add_summary(s, gs)
+                    if gs % 100 == 0:
+                        # Логирование
+                        s = sess.run(summ)
+                        writer.add_summary(s, gs)
 
                     gs += 1
 
                     # Для удаления цикличности данных они перемешиваются после каждой эпохи
-                    if gs % (len(loc_dataset) // batch_size_param) == 0:
-                        rnd_state = nmp.random.get_state()
-                        nmp.random.shuffle(ph_q1)
-                        nmp.random.set_state(rnd_state)
-                        nmp.random.shuffle(ph_q2)
-                        nmp.random.set_state(rnd_state)
-                        nmp.random.shuffle(ph_out)
+                    if (gs % (len(loc_dataset[0]) // batch_size_param) == 0) | (gs == 1):
+                        # Тестовый прогон
+                        sess.run(self.iterate.initializer, feed_dict={self.input_ph_q1: ph_q1_test,
+                                                                      self.input_ph_q2: ph_q2_test,
+                                                                      self.output_ph: ph_out_test})
+                        test_summary = []
+                        for test_iter in range(len(test_dataset[0]) // batch_size_param):
+                            test_summary.extend(sess.run([self.logloss]))
+                        test_summary = tf.Summary(
+                            value=[tf.Summary.Value(
+                                tag='logloss', simple_value=nmp.hstack(test_summary).mean())])
+                        test_writer.add_summary(test_summary, gs)
 
-                        sess.run(self.iterate.initializer, feed_dict={self.input_ph_q1: ph_q1,
-                                                                      self.input_ph_q2: ph_q2,
-                                                                      self.output_ph: ph_out})
+                        # Загрузка обучающей выборки
+                        ph_q1_train, ph_q2_train, ph_out_train = AnsPredict.just_shuffle(train_dataset)
+                        sess.run(self.iterate.initializer, feed_dict={self.input_ph_q1: ph_q1_train,
+                                                                      self.input_ph_q2: ph_q2_train,
+                                                                      self.output_ph: ph_out_train})
 
             # Последняя запись в лог и сохранение весов обученной сети
             s = sess.run(summ)
@@ -296,7 +348,7 @@ if __name__ == '__main__':
 
     # Загрузка соранённого датасета
     main_dataset = LoadData.load_ready_train_data()
-    
+
     # Установка параметров для обучения. Размер блока для итерации и число эпох
     batch_size_param = 100
     epo_train_param = 5
